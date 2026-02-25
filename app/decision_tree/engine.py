@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from config import config
 from ..models import Field, ScheduledTask, FinancialRecord, WeatherData, DecisionTreeModel
 from ..schemas import DecisionTreeRequest, DecisionTreeResponse, CropTypeEnum
+from ..weather.service import WeatherService
 
 class DecisionTreeEngine:
     def __init__(self):
@@ -56,6 +57,23 @@ class DecisionTreeEngine:
                 "optimal_rainfall": 1000,
                 "fertilizer_frequency": 35
             }
+        }
+        self.rc222_schedule = {
+            "land_preparation": [
+                {"name": "Irrigation", "offset": 0, "requires_dry": False},
+                {"name": "Plowing", "offset": 6, "requires_dry": True},
+                {"name": "Harrowing", "offset": 14, "requires_dry": True},
+                {"name": "Levelling", "offset": 21, "requires_dry": True},
+            ],
+            "planting_to_harvest": [
+                {"name": "Transplanting", "offset": 0, "requires_dry": True},
+                {"name": "First Fertilizer (Basal)", "offset": 10, "requires_dry": True},
+                {"name": "Second Fertilizer (Top Dressing)", "offset": 30, "requires_dry": True},
+                {"name": "Third Fertilizer", "offset": 55, "requires_dry": True},
+                {"name": "Pest and Weed Control", "offset": 67, "requires_dry": True},
+                {"name": "Terminal Drainage", "offset": 90, "requires_dry": False},
+                {"name": "Harvesting", "offset": 105, "requires_dry": True},
+            ],
         }
     
     def train_model_for_crop(self, db: Session, crop_type: CropTypeEnum, user_id: int):
@@ -147,7 +165,7 @@ class DecisionTreeEngine:
         # Get fields with specific crop type
         fields = db.query(Field).filter(
             Field.crop_type == crop_type,
-            Field.user_id == user_id
+            Field.owner_id == user_id
         ).all()
         
         for field in fields:
@@ -189,6 +207,9 @@ class DecisionTreeEngine:
                 training_data.append(data_point)
         
         return training_data
+
+    def get_rc222_tasks(self) -> Dict[str, List[Dict[str, Any]]]:
+        return self.rc222_schedule
     
     def predict_optimal_date(self, db: Session, request: DecisionTreeRequest, 
                             weather_data: Dict, current_budget: float) -> DecisionTreeResponse:

@@ -11,7 +11,7 @@ from . import models  # 1. This "registers" the models with Base
 from .database import get_db, init_db, Base, engine
 from .models import User
 from .schemas import UserCreate, User as UserSchema, Token, UserLogin
-from .routes import auth, farm, financial, scheduling, weather
+from .routes import auth, farm, financial, scheduling, weather, sync
 
 # 1. Trigger the database initialization
 # This creates the .db file and the tables if they don't exist yet
@@ -45,6 +45,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "https://zaiden-trollopy-unmanually.ngrok-free.dev",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -57,6 +58,7 @@ app.include_router(farm.router, prefix="/api/v1", tags=["farms"])
 app.include_router(financial.router, prefix="/api/v1", tags=["financial"])
 app.include_router(scheduling.router, prefix="/api/v1", tags=["scheduling"])
 app.include_router(weather.router, prefix="/api/v1", tags=["weather"])
+app.include_router(sync.router, prefix="/api/v1", tags=["sync"])
 
 # --- ENDPOINTS ---
 

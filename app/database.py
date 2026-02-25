@@ -29,7 +29,19 @@ def get_db():
 # 5. Create tables
 def init_db():
     # 1. Force the import of ALL models here
-    from .models import User, Farm, WeatherData 
+    from .models import (
+        User,
+        Farm,
+        Field,
+        Inventory,
+        FinancialRecord,
+        ScheduledTask,
+        WeatherData,
+        WeatherCache,
+        DecisionTreeModel,
+        CropProject,
+        OtpCode,
+    )
     from .database import engine, Base
     
     # 2. This command only creates tables that DON'T exist yet

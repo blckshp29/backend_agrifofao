@@ -28,7 +28,7 @@ class WeatherService:
                 "timezone": "auto"
             }
             
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, timeout=10, verify=False)
             response.raise_for_status()
             data = response.json()
             
@@ -56,7 +56,9 @@ class WeatherService:
             "latitude": data.get("latitude"),
             "longitude": data.get("longitude"),
             "hourly": [],
+            "hourly_data": [],
             "daily": [],
+            "daily_data": [],
             "retrieved_at": datetime.utcnow().isoformat()
         }
         
@@ -71,6 +73,7 @@ class WeatherService:
                     if param in hourly:
                         hourly_entry[param] = hourly[param][i] if i < len(hourly[param]) else None
                 processed_data["hourly"].append(hourly_entry)
+                processed_data["hourly_data"].append(hourly_entry)
         
         # Process daily data
         daily = data.get("daily", {})
@@ -83,6 +86,7 @@ class WeatherService:
                     if key != "time":
                         daily_entry[key] = daily[key][i] if i < len(daily[key]) else None
                 processed_data["daily"].append(daily_entry)
+                processed_data["daily_data"].append(daily_entry)
         
         return processed_data
     
@@ -128,18 +132,22 @@ class WeatherService:
             "latitude": lat,
             "longitude": lon,
             "hourly": [],
+            "hourly_data": [],
             "daily": [], # You could reconstruct daily from hourly if needed
+            "daily_data": [],
             "retrieved_at": records[0].date.isoformat(),
             "is_offline_data": True
         }
 
         for r in records:
-            fallback_data["hourly"].append({
+            hourly_entry = {
                 "time": r.date.isoformat(),
                 "temperature_2m": r.temperature_2m,
                 "precipitation": r.precipitation,
                 # ... add other fields you need ...
-            })
+            }
+            fallback_data["hourly"].append(hourly_entry)
+            fallback_data["hourly_data"].append(hourly_entry)
             
         return fallback_data
 

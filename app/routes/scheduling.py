@@ -1,14 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
-from datetime import datetime
-# Assuming FinancialRecord is defined in your financial.py file:
-from app.routes.financial import FinancialRecord
+from datetime import datetime, timedelta
 
 from .. import models, schemas
 from ..database import get_db
-from ..models import ScheduledTask, Field, User
-from ..schemas import ScheduledTaskCreate, ScheduledTask as ScheduledTaskSchema
+from ..models import ScheduledTask, Field, User, FinancialRecord
+from ..schemas import ScheduledTaskCreate, ScheduledTask as ScheduledTaskSchema, RiceScheduleRequest
 from ..scheduling.service import SchedulingService
 from ..decision_tree.engine import DecisionTreeEngine
 from ..schemas import DecisionTreeRequest, DecisionTreeResponse, OptimizationRequest, OptimizationResponse
@@ -28,7 +26,7 @@ def create_scheduled_task(
     # Verify field belongs to user
     field = db.query(Field).filter(
         Field.id == task.field_id,
-        Field.user_id == current_user.id
+        Field.owner_id == current_user.id
     ).first()
     
     if not field:
@@ -69,7 +67,7 @@ def generate_optimized_schedule(
     # Verify field belongs to user
     field = db.query(Field).filter(
         Field.id == field_id,
-        Field.user_id == current_user.id
+        Field.owner_id == current_user.id
     ).first()
     
     if not field:
@@ -94,7 +92,7 @@ def get_decision_tree_recommendation(
     # Verify field belongs to user
     field = db.query(Field).filter(
         Field.id == request.field_id,
-        Field.user_id == current_user.id
+        Field.owner_id == current_user.id
     ).first()
     
     if not field:
@@ -104,17 +102,18 @@ def get_decision_tree_recommendation(
     from ..weather.service import WeatherService
     weather_service = WeatherService()
     
-    weather_request = {
-        "latitude": field.location_lat or 13.0,
-        "longitude": field.location_lon or 123.0,
-        "days": 30
-    }
+    from ..schemas import WeatherForecastRequest
+    weather_request = WeatherForecastRequest(
+        latitude=field.location_lat or 13.0,
+        longitude=field.location_lon or 123.0,
+        days=30
+    )
     
-    weather_data = weather_service.get_weather_forecast(weather_request)
+    weather_data = weather_service.get_weather_forecast(db, weather_request)
     
     # Get current budget from financial records
     financial_records = db.query(FinancialRecord).filter(
-        FinancialRecord.user_id == current_user.id,
+        FinancialRecord.owner_id == current_user.id,
         FinancialRecord.field_id == request.field_id
     ).all()
     
@@ -126,6 +125,89 @@ def get_decision_tree_recommendation(
         db, request, weather_data, current_budget
     )
 
+@router.post("/scheduling/decision-tree/train/{crop_type}")
+def train_decision_tree(
+    crop_type: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        from ..schemas import CropTypeEnum
+        crop_enum = CropTypeEnum(crop_type)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid crop_type")
+
+    result = decision_tree.train_model_for_crop(db, crop_enum, current_user.id)
+    return {"message": "Training completed", "result": result}
+
+@router.post("/scheduling/rice/rc222/{field_id}")
+def generate_rice_rc222_schedule(
+    field_id: int,
+    payload: RiceScheduleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    field = db.query(Field).filter(
+        Field.id == field_id,
+        Field.owner_id == current_user.id
+    ).first()
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+    if field.crop_type.value != "rice":
+        raise HTTPException(status_code=400, detail="RC 222 schedule is only for rice fields")
+
+    if payload.crop_variety:
+        field.crop_variety = payload.crop_variety
+        db.commit()
+
+    tasks = scheduling_service.generate_rice_rc222_schedule(
+        db=db,
+        field=field,
+        user_id=current_user.id,
+        land_prep_start_date=payload.land_prep_start_date
+    )
+    return {
+        "message": f"Generated {len(tasks)} RC 222 tasks",
+        "field_id": field_id,
+        "tasks": tasks
+    }
+
+@router.post("/scheduling/tasks/{task_id}/check-weather", response_model=ScheduledTaskSchema)
+def check_task_weather(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    task = db.query(ScheduledTask).filter(
+        ScheduledTask.id == task_id,
+        ScheduledTask.user_id == current_user.id
+    ).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    field = db.query(Field).filter(
+        Field.id == task.field_id,
+        Field.owner_id == current_user.id
+    ).first()
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    return scheduling_service.check_and_reschedule_task(
+        db,
+        task,
+        latitude=field.location_lat or 13.0,
+        longitude=field.location_lon or 123.0
+    )
+
+@router.post("/scheduling/tasks/check-tomorrow", response_model=List[ScheduledTaskSchema])
+def check_tomorrow_tasks(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    target_date = datetime.utcnow() + timedelta(days=1)
+    tasks = scheduling_service.check_tasks_for_date(db, current_user.id, target_date)
+    return tasks
+
 @router.post("/scheduling/optimize", response_model=OptimizationResponse)
 def optimize_schedule(
     request: OptimizationRequest,
@@ -135,7 +217,7 @@ def optimize_schedule(
     # Verify field belongs to user
     field = db.query(Field).filter(
         Field.id == request.field_id,
-        Field.user_id == current_user.id
+        Field.owner_id == current_user.id
     ).first()
     
     if not field:
@@ -152,13 +234,14 @@ def optimize_schedule(
     from ..weather.service import WeatherService
     weather_service = WeatherService()
     
-    weather_request = {
-        "latitude": field.location_lat or 13.0,
-        "longitude": field.location_lon or 123.0,
-        "days": 30
-    }
+    from ..schemas import WeatherForecastRequest
+    weather_request = WeatherForecastRequest(
+        latitude=field.location_lat or 13.0,
+        longitude=field.location_lon or 123.0,
+        days=30
+    )
     
-    weather_data = weather_service.get_weather_forecast(weather_request)
+    weather_data = weather_service.get_weather_forecast(db, weather_request)
     
     dt_response = decision_tree.predict_optimal_date(
         db, dt_request, weather_data, request.current_budget
@@ -200,7 +283,7 @@ def get_farm_cycle_timeline(
     # Verify field belongs to user
     field = db.query(Field).filter(
         Field.id == field_id,
-        Field.user_id == current_user.id
+        Field.owner_id == current_user.id
     ).first()
     
     if not field:

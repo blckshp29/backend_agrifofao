@@ -3,13 +3,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+import random
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from typing import Optional
 
 from ..database import get_db
-from ..models import User
-from ..schemas import UserCreate, User as UserSchema, Token, UserLogin
+from ..models import User, OtpCode
+from ..schemas import UserCreate, User as UserSchema, Token, UserLogin, OtpRequest, OtpVerify, OtpResponse
 
 router = APIRouter()
 
@@ -34,8 +35,10 @@ def get_password_hash(password: str) -> str:
     hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
     return hashed.decode('utf-8')
 
-def authenticate_user(db: Session, username: str, password: str):
-    user = db.query(User).filter(User.username == username).first()
+def authenticate_user(db: Session, identifier: str, password: str):
+    user = db.query(User).filter(
+        (User.username == identifier) | (User.email == identifier) | (User.mobile_number == identifier)
+    ).first()
     if not user:
         return False
     if not verify_password(password, user.hashed_password):
@@ -87,6 +90,12 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     if db_email:
         raise HTTPException(status_code=400, detail="Email already registered")
     
+    # Check if mobile number exists
+    if user.mobile_number:
+        db_mobile = db.query(User).filter(User.mobile_number == user.mobile_number).first()
+        if db_mobile:
+            raise HTTPException(status_code=400, detail="Mobile number already registered")
+    
     # Create new user
     hashed_password = get_password_hash(user.password)
     db_user = User(
@@ -94,7 +103,14 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         email=user.email,
         hashed_password=hashed_password,
         full_name=user.full_name,
-        farm_name=user.farm_name
+        farm_name=user.farm_name,
+        sex=user.sex,
+        location=user.location,
+        province=user.province,
+        city_municipality=user.city_municipality,
+        barangay=user.barangay,
+        mobile_number=user.mobile_number,
+        birthdate=user.birthdate
     )
     
     db.add(db_user)
@@ -112,6 +128,8 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    user.last_login_at = datetime.utcnow()
+    db.commit()
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
@@ -121,3 +139,51 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 @router.get("/users/me", response_model=UserSchema)
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
+
+# --- DEV-ONLY OTP FLOW ---
+@router.post("/otp/request", response_model=OtpResponse)
+def request_otp(payload: OtpRequest, db: Session = Depends(get_db)):
+    code = f"{random.randint(0, 999999):06d}"
+    expires_at = datetime.utcnow() + timedelta(minutes=10)
+
+    otp = OtpCode(
+        channel=payload.channel.value,
+        destination=payload.destination,
+        code=code,
+        expires_at=expires_at
+    )
+    db.add(otp)
+    db.commit()
+
+    # DEV-ONLY: return the code so frontend can display or test
+    return {"success": True, "message": f"OTP generated: {code}"}
+
+@router.post("/otp/verify", response_model=OtpResponse)
+def verify_otp(payload: OtpVerify, db: Session = Depends(get_db)):
+    otp = db.query(OtpCode).filter(
+        OtpCode.channel == payload.channel.value,
+        OtpCode.destination == payload.destination,
+        OtpCode.code == payload.code,
+        OtpCode.verified_at.is_(None)
+    ).order_by(OtpCode.created_at.desc()).first()
+
+    if not otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    if otp.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="OTP expired")
+
+    otp.verified_at = datetime.utcnow()
+
+    # Mark user verified if exists
+    user = None
+    if payload.channel.value == "email":
+        user = db.query(User).filter(User.email == payload.destination).first()
+        if user:
+            user.email_verified = True
+    elif payload.channel.value == "sms":
+        user = db.query(User).filter(User.mobile_number == payload.destination).first()
+        if user:
+            user.phone_verified = True
+
+    db.commit()
+    return {"success": True, "message": "OTP verified"}
