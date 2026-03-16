@@ -60,19 +60,19 @@ class DecisionTreeEngine:
         }
         self.rc222_schedule = {
             "land_preparation": [
-                {"name": "Irrigation", "offset": 0, "requires_dry": False},
-                {"name": "Plowing", "offset": 6, "requires_dry": True},
-                {"name": "Harrowing", "offset": 14, "requires_dry": True},
-                {"name": "Levelling", "offset": 21, "requires_dry": True},
+                {"name": "Irrigation", "min_offset": 0, "max_offset": 0, "requires_dry": False},
+                {"name": "Plowing", "min_offset": 6, "max_offset": 6, "requires_dry": True},
+                {"name": "Harrowing", "min_offset": 14, "max_offset": 14, "requires_dry": True},
+                {"name": "Levelling", "min_offset": 21, "max_offset": 21, "requires_dry": True},
             ],
             "planting_to_harvest": [
-                {"name": "Transplanting", "offset": 0, "requires_dry": True},
-                {"name": "First Fertilizer (Basal)", "offset": 10, "requires_dry": True},
-                {"name": "Second Fertilizer (Top Dressing)", "offset": 30, "requires_dry": True},
-                {"name": "Third Fertilizer", "offset": 55, "requires_dry": True},
-                {"name": "Pest and Weed Control", "offset": 67, "requires_dry": True},
-                {"name": "Terminal Drainage", "offset": 90, "requires_dry": False},
-                {"name": "Harvesting", "offset": 105, "requires_dry": True},
+                {"name": "Transplanting", "min_offset": 0, "max_offset": 0, "requires_dry": True},
+                {"name": "First Fertilizer (Basal)", "min_offset": 10, "max_offset": 14, "requires_dry": True},
+                {"name": "Second Fertilizer (Top Dressing)", "min_offset": 30, "max_offset": 45, "requires_dry": True},
+                {"name": "Third Fertilizer", "min_offset": 55, "max_offset": 65, "requires_dry": True},
+                {"name": "Pest and Weed Control", "min_offset": 67, "max_offset": 80, "requires_dry": True},
+                {"name": "Terminal Drainage", "min_offset": 90, "max_offset": 95, "requires_dry": False},
+                {"name": "Harvesting", "min_offset": 107, "max_offset": 111, "requires_dry": True},
             ],
         }
     
@@ -211,8 +211,16 @@ class DecisionTreeEngine:
     def get_rc222_tasks(self) -> Dict[str, List[Dict[str, Any]]]:
         return self.rc222_schedule
     
-    def predict_optimal_date(self, db: Session, request: DecisionTreeRequest, 
-                            weather_data: Dict, current_budget: float) -> DecisionTreeResponse:
+    def predict_optimal_date(
+        self,
+        db: Session,
+        request: DecisionTreeRequest,
+        weather_data: Dict,
+        current_budget: float,
+        window_start: Optional[datetime] = None,
+        window_end: Optional[datetime] = None,
+        requires_dry_weather: bool = True
+    ) -> DecisionTreeResponse:
         """Predict optimal date for farming operation"""
         field = db.query(Field).filter(Field.id == request.field_id).first()
         
@@ -226,12 +234,12 @@ class DecisionTreeEngine:
         weather_service = WeatherService()
         
         # Define date range for prediction
-        start_date = datetime.now()
-        end_date = start_date + timedelta(days=30)  # Look 30 days ahead
-        
+        start_date = window_start or datetime.now()
+        end_date = window_end or (start_date + timedelta(days=30))  # Default lookahead
+
         optimal_windows = weather_service.get_optimal_weather_window(
             weather_data, start_date, end_date, 
-            requires_dry_weather=True  # Most operations require dry weather
+            requires_dry_weather=requires_dry_weather
         )
         
         if not optimal_windows:
@@ -344,7 +352,7 @@ class DecisionTreeEngine:
         
         base_yield = base_yields.get(crop_type, 20000)
         
-        # Operation impact factors
+        # Operation impact factors 
         impact_factors = {
             "land_preparation": 0.1,
             "planting": 0.15,

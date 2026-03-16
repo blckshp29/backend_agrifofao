@@ -8,5 +8,10 @@
 
 # --- Development Folders ---
 /node_modules
-/__pycache__
+/.venv/
+/.venv.venv/
+/venv/
+__pycache__/
+*.pyc
 /.env
+/secret/

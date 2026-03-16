@@ -10,12 +10,21 @@ from ..schemas import ScheduledTaskCreate, ScheduledTask as ScheduledTaskSchema,
 from ..scheduling.service import SchedulingService
 from ..decision_tree.engine import DecisionTreeEngine
 from ..schemas import DecisionTreeRequest, DecisionTreeResponse, OptimizationRequest, OptimizationResponse
+from ..notifications.service import send_push_to_user
 from .auth import get_current_user
 
 
 router = APIRouter()
 scheduling_service = SchedulingService()
 decision_tree = DecisionTreeEngine()
+
+
+class TaskDelayRequest(schemas.BaseModel):
+    delay_days: int = 1
+
+
+class TaskMoveRequest(schemas.BaseModel):
+    new_date: datetime
 
 @router.post("/scheduling/service", response_model=ScheduledTaskSchema)
 def create_scheduled_task(
@@ -106,7 +115,7 @@ def get_decision_tree_recommendation(
     weather_request = WeatherForecastRequest(
         latitude=field.location_lat or 13.0,
         longitude=field.location_lon or 123.0,
-        days=30
+        days=5
     )
     
     weather_data = weather_service.get_weather_forecast(db, weather_request)
@@ -140,13 +149,15 @@ def train_decision_tree(
     result = decision_tree.train_model_for_crop(db, crop_enum, current_user.id)
     return {"message": "Training completed", "result": result}
 
+@router.post("/scheduling/rice/{field_id}")
 @router.post("/scheduling/rice/rc222/{field_id}")
-def generate_rice_rc222_schedule(
+def generate_rice_variety_schedule(
     field_id: int,
-    payload: RiceScheduleRequest,
+    payload: RiceScheduleRequest | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    payload = payload or RiceScheduleRequest()
     field = db.query(Field).filter(
         Field.id == field_id,
         Field.owner_id == current_user.id
@@ -154,21 +165,27 @@ def generate_rice_rc222_schedule(
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     if field.crop_type.value != "rice":
-        raise HTTPException(status_code=400, detail="RC 222 schedule is only for rice fields")
+        raise HTTPException(status_code=400, detail="Rice schedule is only for rice fields")
 
     if payload.crop_variety:
         field.crop_variety = payload.crop_variety
         db.commit()
 
-    tasks = scheduling_service.generate_rice_rc222_schedule(
-        db=db,
-        field=field,
-        user_id=current_user.id,
-        land_prep_start_date=payload.land_prep_start_date
-    )
+    try:
+        tasks = scheduling_service.generate_rice_variety_schedule(
+            db=db,
+            field=field,
+            user_id=current_user.id,
+            land_prep_start_date=payload.land_prep_start_date
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    selected_variety = field.crop_variety or "NSIC Rc222"
     return {
-        "message": f"Generated {len(tasks)} RC 222 tasks",
+        "message": f"Generated {len(tasks)} rice tasks for {selected_variety}",
         "field_id": field_id,
+        "crop_variety": selected_variety,
         "tasks": tasks
     }
 
@@ -192,21 +209,76 @@ def check_task_weather(
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
 
-    return scheduling_service.check_and_reschedule_task(
+    original_date = task.scheduled_date
+    updated_task = scheduling_service.check_and_reschedule_task(
         db,
         task,
         latitude=field.location_lat or 13.0,
         longitude=field.location_lon or 123.0
     )
+    if updated_task.status == "rescheduled":
+        send_push_to_user(
+            db=db,
+            user_id=current_user.id,
+            title="Task Rescheduled Due to Weather",
+            body=f"{updated_task.task_name} moved to {updated_task.scheduled_date.strftime('%Y-%m-%d %H:%M')}",
+            data={
+                "event": "task_rescheduled",
+                "task_id": str(updated_task.id),
+                "old_date": original_date.isoformat(),
+                "new_date": updated_task.scheduled_date.isoformat(),
+            },
+            notification_type="task_rescheduled",
+        )
+    return updated_task
 
-@router.post("/scheduling/tasks/check-tomorrow", response_model=List[ScheduledTaskSchema])
+@router.post("/scheduling/tasks/check-tomorrow")
 def check_tomorrow_tasks(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    target_date = datetime.utcnow() + timedelta(days=1)
-    tasks = scheduling_service.check_tasks_for_date(db, current_user.id, target_date)
-    return tasks
+    return {
+        "success": True,
+        "items": scheduling_service.process_tomorrow_task_notifications(db, current_user.id),
+    }
+
+
+@router.post("/scheduling/tasks/{task_id}/delay", response_model=ScheduledTaskSchema)
+def delay_task_from_notification(
+    task_id: int,
+    payload: TaskDelayRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    task = db.query(ScheduledTask).filter(
+        ScheduledTask.id == task_id,
+        ScheduledTask.user_id == current_user.id
+    ).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        return scheduling_service.delay_task(db, task, payload.delay_days)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/scheduling/tasks/{task_id}/move", response_model=ScheduledTaskSchema)
+def move_task_from_notification(
+    task_id: int,
+    payload: TaskMoveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    task = db.query(ScheduledTask).filter(
+        ScheduledTask.id == task_id,
+        ScheduledTask.user_id == current_user.id
+    ).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        return scheduling_service.move_task(db, task, payload.new_date)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @router.post("/scheduling/optimize", response_model=OptimizationResponse)
 def optimize_schedule(
@@ -238,7 +310,7 @@ def optimize_schedule(
     weather_request = WeatherForecastRequest(
         latitude=field.location_lat or 13.0,
         longitude=field.location_lon or 123.0,
-        days=30
+        days=5
     )
     
     weather_data = weather_service.get_weather_forecast(db, weather_request)
@@ -289,7 +361,23 @@ def get_farm_cycle_timeline(
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     
-    return scheduling_service.calculate_farm_cycle_timeline(db, field_id)
+    return scheduling_service.calculate_farm_cycle_timeline(db, field_id, current_user.id)
+
+@router.get("/scheduling/farm-cycle/grouped/{field_id}")
+def get_farm_cycle_timeline_grouped(
+    field_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    field = db.query(Field).filter(
+        Field.id == field_id,
+        Field.owner_id == current_user.id
+    ).first()
+
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    return scheduling_service.calculate_farm_cycle_timeline(db, field_id, current_user.id)
 
 @router.patch("/scheduling/tasks/{task_id}", response_model=schemas.ScheduledTask)
 def update_task(

@@ -33,13 +33,12 @@ async def get_farm_weather(lat: float, lon: float):
     async with httpx.AsyncClient() as client:
         try:
             params = {
-                "latitude": lat,
-                "longitude": lon,
-                "current_weather": "true",
-                "timezone": "auto"
+                "lat": lat,
+                "lon": lon,
+                "units": "metric",
+                "appid": config.OPENWEATHER_API_KEY
             }
-            # Open-Meteo Base URL should be the forecast endpoint
-            response = await client.get(f"{config.OPEN_METEO_BASE_URL}/forecast", params=params)
+            response = await client.get(f"{config.OPENWEATHER_BASE_URL}/weather", params=params)
             response.raise_for_status()
             return response.json()
         except Exception:
@@ -65,7 +64,7 @@ def get_optimal_windows(
         weather_request = WeatherForecastRequest(
             latitude=farm.location_lat,
             longitude=farm.location_lon,
-            days=7
+            days=5
         )
         
         # This calls your method that has the try/except internet fallback

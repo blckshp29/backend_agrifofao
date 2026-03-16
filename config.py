@@ -12,8 +12,10 @@ class Config:
         f"sqlite:///{os.path.join(BASE_DIR, 'agricultural_operations.db')}"
     )
     
-    # 2. Open-Meteo Settings
-    OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1"
+    # 2. OpenWeatherMap Settings
+    OPENWEATHER_BASE_URL = "https://api.openweathermap.org/data/2.5"
+    OPENWEATHER_GEO_BASE_URL = "https://api.openweathermap.org/geo/1.0"
+    OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
     
     # These match the columns in your WeatherData model
     WEATHER_PARAMS = [
@@ -27,7 +29,7 @@ class Config:
     ]
     
     # 3. Security (Essential for Prototype 2)
-    SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-farming-key-123")
+    SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
     ALGORITHM = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 Day
     

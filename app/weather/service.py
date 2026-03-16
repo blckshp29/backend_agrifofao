@@ -10,25 +10,21 @@ from ..schemas import WeatherForecastRequest, WeatherForecastResponse
 
 class WeatherService:
     def __init__(self):
-        # Fallback to public URL if config is missing it
-        self.base_url = getattr(config, "OPEN_METEO_BASE_URL", "https://api.open-meteo.com/v1")
+        self.base_url = getattr(config, "OPENWEATHER_BASE_URL", "https://api.openweathermap.org/data/2.5")
+        self.api_key = getattr(config, "OPENWEATHER_API_KEY", "")
     
     def get_weather_forecast(self, db: Session, request: WeatherForecastRequest) -> Dict[str, Any]:
-        """Fetch weather forecast from Open-Meteo API with Automatic DB Saving"""
+        """Fetch weather forecast from OpenWeatherMap API with Automatic DB Saving"""
         try:
             url = f"{self.base_url}/forecast"
-            
-            # Using specific hourly params for farming
             params = {
-                "latitude": request.latitude,
-                "longitude": request.longitude,
-                "hourly": "temperature_2m,relative_humidity_2m,precipitation,rain,soil_moisture_0_1cm",
-                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum",
-                "forecast_days": request.days,
-                "timezone": "auto"
+                "lat": request.latitude,
+                "lon": request.longitude,
+                "units": "metric",
+                "appid": self.api_key
             }
             
-            response = requests.get(url, params=params, timeout=10, verify=False)
+            response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             
@@ -51,43 +47,66 @@ class WeatherService:
             raise Exception(f"Weather data unavailable online and offline: {str(e)}")
     
     def _process_weather_data(self, data: Dict, request: WeatherForecastRequest) -> Dict[str, Any]:
-        """Process raw weather data into structured format"""
+        """Process raw OpenWeatherMap data into structured format"""
         processed_data = {
-            "latitude": data.get("latitude"),
-            "longitude": data.get("longitude"),
+            "latitude": data.get("city", {}).get("coord", {}).get("lat"),
+            "longitude": data.get("city", {}).get("coord", {}).get("lon"),
             "hourly": [],
             "hourly_data": [],
             "daily": [],
             "daily_data": [],
             "retrieved_at": datetime.utcnow().isoformat()
         }
-        
-        # Process hourly data
-        hourly = data.get("hourly", {})
-        time_list = hourly.get("time", [])
-        
-        if time_list:
-            for i in range(len(time_list)):
-                hourly_entry = {"time": time_list[i]}
-                for param in config.WEATHER_PARAMS:
-                    if param in hourly:
-                        hourly_entry[param] = hourly[param][i] if i < len(hourly[param]) else None
-                processed_data["hourly"].append(hourly_entry)
-                processed_data["hourly_data"].append(hourly_entry)
-        
-        # Process daily data
-        daily = data.get("daily", {})
-        daily_time_list = daily.get("time", [])
-        
-        if daily_time_list:
-            for i in range(len(daily_time_list)):
-                daily_entry = {"date": daily_time_list[i]}
-                for key in daily.keys():
-                    if key != "time":
-                        daily_entry[key] = daily[key][i] if i < len(daily[key]) else None
-                processed_data["daily"].append(daily_entry)
-                processed_data["daily_data"].append(daily_entry)
-        
+
+        lst = data.get("list", [])
+        daily_map: Dict[str, Dict[str, Any]] = {}
+
+        for entry in lst:
+            dt = datetime.utcfromtimestamp(entry.get("dt"))
+            date_key = dt.strftime("%Y-%m-%d")
+            main = entry.get("main", {})
+            rain = entry.get("rain", {}).get("3h", 0.0)
+            snow = entry.get("snow", {}).get("3h", 0.0)
+            wind = entry.get("wind", {})
+            weather_items = entry.get("weather", [])
+            weather_main = weather_items[0].get("main") if weather_items else None
+            weather_code = weather_items[0].get("id") if weather_items else None
+
+            hourly_entry = {
+                "time": dt.isoformat(),
+                "temperature_2m": main.get("temp"),
+                "relative_humidity_2m": main.get("humidity"),
+                "precipitation": rain,
+                "rain": rain,
+                "snowfall": snow,
+                "wind_speed_10m": wind.get("speed"),
+                "weather_main": weather_main,
+                "weather_code": weather_code,
+                "soil_moisture_0_1cm": None
+            }
+            processed_data["hourly"].append(hourly_entry)
+            processed_data["hourly_data"].append(hourly_entry)
+
+            day = daily_map.setdefault(date_key, {
+                "date": date_key,
+                "temperature_2m_max": None,
+                "temperature_2m_min": None,
+                "precipitation_sum": 0.0,
+                "wind_speed_max": 0.0,
+                "weather_main": weather_main,
+                "weather_code": weather_code
+            })
+            temp = main.get("temp")
+            if temp is not None:
+                day["temperature_2m_max"] = temp if day["temperature_2m_max"] is None else max(day["temperature_2m_max"], temp)
+                day["temperature_2m_min"] = temp if day["temperature_2m_min"] is None else min(day["temperature_2m_min"], temp)
+            day["precipitation_sum"] += rain
+            wind_speed = wind.get("speed", 0.0) or 0.0
+            day["wind_speed_max"] = max(day["wind_speed_max"], wind_speed)
+
+        processed_data["daily"] = list(daily_map.values())
+        processed_data["daily_data"] = processed_data["daily"]
+
         return processed_data
     
     def save_weather_data(self, db: Session, weather_data: Dict, location_lat: float, location_lon: float):
@@ -104,11 +123,14 @@ class WeatherService:
                 precipitation=entry.get("precipitation"),
                 rain=entry.get("rain"),
                 snowfall=entry.get("snowfall"),
+                wind_speed_10m=entry.get("wind_speed_10m"),
+                weather_main=entry.get("weather_main"),
                 soil_moisture_0_1cm=entry.get("soil_moisture_0_1cm"),
                 soil_moisture_1_3cm=entry.get("soil_moisture_1_3cm"),
                 soil_moisture_3_9cm=entry.get("soil_moisture_3_9cm"),
                 soil_moisture_9_27cm=entry.get("soil_moisture_9_27cm"),
-                soil_moisture_27_81cm=entry.get("soil_moisture_27_81cm")
+                soil_moisture_27_81cm=entry.get("soil_moisture_27_81cm"),
+                weather_code=entry.get("weather_code"),
             )
             db.add(weather_record)
         
@@ -133,22 +155,60 @@ class WeatherService:
             "longitude": lon,
             "hourly": [],
             "hourly_data": [],
-            "daily": [], # You could reconstruct daily from hourly if needed
+            "daily": [],
             "daily_data": [],
             "retrieved_at": records[0].date.isoformat(),
             "is_offline_data": True
         }
 
+        daily_map: Dict[str, Dict[str, Any]] = {}
+
         for r in records:
+            date_key = r.date.strftime("%Y-%m-%d")
             hourly_entry = {
                 "time": r.date.isoformat(),
                 "temperature_2m": r.temperature_2m,
                 "precipitation": r.precipitation,
-                # ... add other fields you need ...
+                "rain": r.rain,
+                "snowfall": r.snowfall,
+                "relative_humidity_2m": r.relative_humidity_2m,
+                "soil_moisture_0_1cm": r.soil_moisture_0_1cm,
+                "soil_moisture_1_3cm": r.soil_moisture_1_3cm,
+                "soil_moisture_3_9cm": r.soil_moisture_3_9cm,
+                "soil_moisture_9_27cm": r.soil_moisture_9_27cm,
+                "soil_moisture_27_81cm": r.soil_moisture_27_81cm,
+                "weather_main": r.weather_main,
+                "weather_code": r.weather_code,
+                "wind_speed_10m": r.wind_speed_10m,
             }
             fallback_data["hourly"].append(hourly_entry)
             fallback_data["hourly_data"].append(hourly_entry)
-            
+
+            day = daily_map.setdefault(date_key, {
+                "date": date_key,
+                "temperature_2m_max": None,
+                "temperature_2m_min": None,
+                "precipitation_sum": 0.0,
+                "wind_speed_max": 0.0,
+                "weather_main": r.weather_main,
+                "weather_code": r.weather_code,
+            })
+
+            temp = r.temperature_2m
+            if temp is not None:
+                day["temperature_2m_max"] = temp if day["temperature_2m_max"] is None else max(day["temperature_2m_max"], temp)
+                day["temperature_2m_min"] = temp if day["temperature_2m_min"] is None else min(day["temperature_2m_min"], temp)
+
+            precipitation = r.precipitation or 0.0
+            day["precipitation_sum"] += precipitation
+            wind_speed = r.wind_speed_10m or 0.0
+            day["wind_speed_max"] = max(day["wind_speed_max"], wind_speed)
+
+        fallback_data["hourly"].sort(key=lambda entry: entry["time"])
+        fallback_data["hourly_data"] = fallback_data["hourly"]
+        fallback_data["daily"] = [daily_map[key] for key in sorted(daily_map.keys())]
+        fallback_data["daily_data"] = fallback_data["daily"]
+
         return fallback_data
 
     def check_weather_suitability(self, weather_data: Dict, date: datetime, requires_dry_weather: bool = False) -> Dict[str, Any]:
@@ -159,18 +219,33 @@ class WeatherService:
         suitability = {
             "is_suitable": True,
             "reasons": [],
-            "risks": []
+            "risks": [],
+            "recommended_delay_days": 0
         }
         
         for daily_entry in weather_data.get("daily", []):
             if daily_entry.get("date") == target_date:
                 # Check precipitation
                 precipitation = daily_entry.get("precipitation_sum", 0)
+                wind_speed = daily_entry.get("wind_speed_max", 0) or 0
                 
                 if requires_dry_weather and precipitation > 0:
                     suitability["is_suitable"] = False
                     suitability["reasons"].append(f"Rain expected ({precipitation} mm)")
                     suitability["risks"].append("Chemical runoff risk")
+                    suitability["recommended_delay_days"] = max(suitability["recommended_delay_days"], 1)
+
+                # Decision-tree veto behavior for severe weather
+                if precipitation >= 10:
+                    suitability["is_suitable"] = False
+                    suitability["reasons"].append("Heavy rain forecast")
+                    suitability["risks"].append("Input loss and nutrient washout risk")
+                    suitability["recommended_delay_days"] = max(suitability["recommended_delay_days"], 2)
+                if wind_speed >= 25:
+                    suitability["is_suitable"] = False
+                    suitability["reasons"].append("High wind forecast")
+                    suitability["risks"].append("Spray drift risk")
+                    suitability["recommended_delay_days"] = max(suitability["recommended_delay_days"], 2)
                 
                 # Check temperature range
                 temp_max = daily_entry.get("temperature_2m_max")

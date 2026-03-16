@@ -1,3 +1,4 @@
+import json
 from pydantic import BaseModel, Field as PyField, ConfigDict # Rename Field here
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
@@ -104,6 +105,46 @@ class UserCreate(UserBase):
     password: str
     otp_code: Optional[str] = None
 
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    farm_name: Optional[str] = None
+    sex: Optional[SexEnum] = None
+    location: Optional[str] = None
+    province: Optional[str] = None
+    city_municipality: Optional[str] = None
+    barangay: Optional[str] = None
+    mobile_number: Optional[str] = None
+    birthdate: Optional[date] = None
+
+    @field_validator("sex", mode="before")
+    @classmethod
+    def normalize_sex(cls, v):
+        if v is None or isinstance(v, SexEnum):
+            return v
+        if isinstance(v, str):
+            val = v.strip().lower()
+            if val in {"m", "male"}:
+                return SexEnum.M
+            if val in {"f", "female"}:
+                return SexEnum.F
+        return v
+
+    @field_validator("birthdate", mode="before")
+    @classmethod
+    def parse_birthdate(cls, v):
+        if v is None or isinstance(v, date):
+            return v
+        if isinstance(v, str):
+            try:
+                return datetime.strptime(v, "%d/%m/%Y").date()
+            except ValueError:
+                raise ValueError("birthdate must be in dd/mm/yyyy format")
+        return v
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
 class UserLogin(BaseModel):
     identifier: str
     password: str
@@ -119,6 +160,82 @@ class User(UserBase):
     sync_status: Optional[SyncStatusEnum] = SyncStatusEnum.pending
     
     model_config = ConfigDict(from_attributes=True)
+
+class UserPreferenceBase(BaseModel):
+    email_notifications: bool = True
+    sms_notifications: bool = False
+    push_notifications: bool = False
+    marketing_notifications: bool = False
+    language: str = "en"
+    timezone: str = "Asia/Manila"
+
+class UserPreferenceUpdate(BaseModel):
+    email_notifications: Optional[bool] = None
+    sms_notifications: Optional[bool] = None
+    push_notifications: Optional[bool] = None
+    marketing_notifications: Optional[bool] = None
+    language: Optional[str] = None
+    timezone: Optional[str] = None
+
+class UserPreference(UserPreferenceBase):
+    id: int
+    user_id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class Notification(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    message: str
+    type: str
+    data: Optional[Dict[str, Any]] = None
+    is_read: bool
+    created_at: datetime
+    read_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def parse_notification_data(cls, value):
+        if value is None or isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                return None
+        return None
+
+class NotificationCreate(BaseModel):
+    title: str
+    message: str
+    type: str = "system"
+    data: Optional[Dict[str, Any]] = None
+
+class FCMTokenUpsert(BaseModel):
+    token: str
+    device_type: str = "web"
+
+class FCMToken(BaseModel):
+    id: int
+    user_id: int
+    token: str
+    device_type: str
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class PushNotificationRequest(BaseModel):
+    title: str
+    body: str
+    data: Optional[Dict[str, str]] = None
+    topic: Optional[str] = None
 
 # --- OTP Schemas ---
 class OtpRequest(BaseModel):
@@ -264,6 +381,7 @@ class FinancialRecordBase(BaseModel):
     currency: str = "PHP"
     description: Optional[str] = None
     client_id: Optional[str] = None
+    is_history: Optional[bool] = False
     field_id: Optional[int] = None
     project_id: Optional[int] = None
     is_over_budget: Optional[bool] = False
@@ -301,6 +419,8 @@ class ScheduledTaskBase(BaseModel):
     actual_cost: Optional[float] = None
     weather_check_date: Optional[datetime] = None
     weather_status: Optional[str] = None
+    cycle_number: Optional[int] = PyField(default=None, ge=1, le=2)
+    cycle_day: Optional[int] = PyField(default=None, ge=0)
     completed_at: Optional[datetime] = None
     confirmed_by_user: Optional[bool] = False
     field_id: int
@@ -317,6 +437,9 @@ class ScheduledTask(ScheduledTaskBase):
     status: TaskStatusEnum
     actual_cost: Optional[float] = None
     decision_tree_recommendation: bool
+    tomorrow_check_at: Optional[datetime] = None
+    tomorrow_notification_sent_at: Optional[datetime] = None
+    tomorrow_notification_type: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_synced_at: Optional[datetime] = None
@@ -341,6 +464,8 @@ class ScheduledTaskUpdate(BaseModel):
     actual_cost: Optional[float] = None
     weather_check_date: Optional[datetime] = None
     weather_status: Optional[str] = None
+    cycle_number: Optional[int] = PyField(default=None, ge=1, le=2)
+    cycle_day: Optional[int] = PyField(default=None, ge=0)
     completed_at: Optional[datetime] = None
     confirmed_by_user: Optional[bool] = None
     field_id: Optional[int] = None
@@ -358,7 +483,7 @@ class WeatherForecastRequest(BaseModel):
     # Ensure there is a COLON (:) and an EQUALS (=)
     latitude: float = PyField(..., ge=-90, le=90)
     longitude: float = PyField(..., ge=-180, le=180)
-    days: int = PyField(default=7, ge=1, le=14) # Open-Meteo free tier limit
+    days: int = PyField(default=5, ge=1, le=5) # OpenWeatherMap 5-day forecast limit
 
 class WeatherForecastResponse(BaseModel):
     latitude: float

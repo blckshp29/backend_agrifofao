@@ -1,5 +1,5 @@
 from app.database import Base
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Enum, Text, Date
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Enum, Text, Date, UniqueConstraint
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 import enum
@@ -198,6 +198,7 @@ class FinancialRecord(Base):
     currency = Column(String, default="PHP")
     description = Column(Text)
     client_id = Column(String, index=True)
+    is_history = Column(Boolean, default=False)
     date = Column(DateTime, default=datetime.utcnow)
     user_id = Column(Integer, ForeignKey("users.id"))
     field_id = Column(Integer, ForeignKey("fields.id"), nullable=True)
@@ -243,6 +244,11 @@ class ScheduledTask(Base):
     decision_tree_recommendation = Column(Boolean, default=False)
     weather_check_date = Column(DateTime)
     weather_status = Column(String)
+    tomorrow_check_at = Column(DateTime)
+    tomorrow_notification_sent_at = Column(DateTime)
+    tomorrow_notification_type = Column(String)
+    cycle_number = Column(Integer, nullable=True)  # 1=land prep, 2=planting-to-harvest
+    cycle_day = Column(Integer, nullable=True)     # day offset within the cycle
     completed_at = Column(DateTime)
     confirmed_by_user = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -269,6 +275,8 @@ class WeatherData(Base):
     precipitation = Column(Float)
     rain = Column(Float)
     snowfall = Column(Float)
+    wind_speed_10m = Column(Float)
+    weather_main = Column(String)
     soil_moisture_0_1cm = Column(Float)
     soil_moisture_1_3cm = Column(Float)
     soil_moisture_3_9cm = Column(Float)
@@ -308,3 +316,47 @@ class OtpCode(Base):
     verified_at = Column(DateTime)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    email_notifications = Column(Boolean, default=True)
+    sms_notifications = Column(Boolean, default=False)
+    push_notifications = Column(Boolean, default=False)
+    marketing_notifications = Column(Boolean, default=False)
+    language = Column(String, default="en")
+    timezone = Column(String, default="Asia/Manila")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    type = Column(String, default="system")
+    data = Column(Text, nullable=True)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    read_at = Column(DateTime, nullable=True)
+
+
+class FCMDeviceToken(Base):
+    __tablename__ = "fcm_device_tokens"
+    __table_args__ = (
+        UniqueConstraint("user_id", "token", name="uq_fcm_user_token"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token = Column(String, nullable=False)
+    device_type = Column(String, default="web")
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
